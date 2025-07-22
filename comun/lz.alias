@@ -1,0 +1,4 @@
+fzf --height=20 --preview 'batcat --color=always {}' --preview-window=right:60%:wrap \
+    --bind \"enter:execute( \
+        if file --mime {} | grep -q 'text'; then nvim {}; else nvim -b {}; fi \
+    )\
