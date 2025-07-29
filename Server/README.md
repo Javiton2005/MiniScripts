@@ -1,0 +1,1 @@
+Install requirements.txt and module ffmpeg with paquete manager 
