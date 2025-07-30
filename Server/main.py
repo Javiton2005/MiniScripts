@@ -5,19 +5,21 @@ from spotipy.oauth2 import SpotifyOAuth
 import mysql.connector
 import time
 import os
-import yt_dlp
-from os.path import expanduser
+from yt_dlp import YoutubeDL
 import cursor
+import descargar
+import asyncio
+import threading
 
 load_dotenv()
-
+path = os.getenv("PATH_DESCARGA")
 
 # Conexión a la base de datos remota
 conn = mysql.connector.connect(
     host='192.168.0.99',
-    user=os.getenv("user_db"),
-    password=os.getenv("password_db"),
-    database=os.getenv("database")
+    user=os.getenv("USER_DB"),
+    password=os.getenv("PASSWORD_DB"),
+    database=os.getenv("DATABASE")
 )
 cursor = conn.cursor()
 
@@ -29,6 +31,62 @@ sp = spotipy.Spotify(auth_manager=SpotifyOAuth(
     open_browser=False,
     cache_path=os.path.expanduser('~/token.json')
 ))
+
+
+def marcar_como_descargada(id_cancion, youtube_url):
+    cursor.execute(
+        "UPDATE spotify SET descargada = %s, youtube_url = %s WHERE id = %s",
+        (True, youtube_url, id_cancion)
+    )
+    conn.commit()
+    print(f"✔️ Marcada como descargada: {id_cancion}")
+
+
+def progress_handler(status):
+    """if 'percent' in status:
+        print(f"Progreso: {status['percent']:.1f}% - {status['status']}")
+    else:
+        print(f"Estado: {status['status']}")
+    """
+
+def buscar_en_youtube(nombre_cancion, id_cancion):
+    query = f"ytsearch1:{nombre_cancion}"
+    with YoutubeDL({'quiet': True}) as ydl:
+        try:
+            info = ydl.extract_info(query, download=False)
+            if 'entries' in info and info['entries']:
+                url = info['entries'][0]['webpage_url']
+                asyncio.run(descargar.download_video_as_mp3(
+                    url,
+                    path, 
+                    progress_callback=progress_handler
+                ))
+                marcar_como_descargada(id_cancion, url)
+                return url
+        except Exception as e:
+            print(f"Error buscando en YouTube: {e}")
+    return None
+
+
+def procesar_descargas():
+    while True:
+        try:
+            cursor.execute("SELECT id, titulo, artista FROM spotify WHERE descargada = FALSE")
+            canciones_pendientes = cursor.fetchall()
+
+            for id_cancion, titulo, artista in canciones_pendientes:
+                nombre_cancion = f"{titulo} {artista}"
+                print(f"🔍 Buscando y descargando: {nombre_cancion}")
+                buscar_en_youtube(nombre_cancion, id_cancion)
+
+            time.sleep(10)  # Esperar antes de revisar de nuevo
+        except Exception as e:
+            print(f"❌ Error en el hilo de descargas: {e}")
+            time.sleep(10)
+
+# Iniciar hilo de descargas
+hilo_descargas = threading.Thread(target=procesar_descargas, daemon=True)
+hilo_descargas.start()
 
 
 def guardar_cancion(track):
@@ -51,60 +109,12 @@ def guardar_cancion(track):
         print(f"Ya registrado: {titulo} - {artista}")
 
 
-def descarga(song_title: str, output_dir: str = "/mnt/musica"):
-    # Asegura que el directorio exista
-    os.makedirs(output_dir, exist_ok=True)
-
-    # Configuración de yt-dlp
-    ydl_opts = {
-        'format': 'bestaudio/best',
-        'noplaylist': True,
-        'quiet': True,
-        'default_search': 'ytsearch1',
-        'outtmpl': os.path.join(output_dir, '%(title)s.%(ext)s'),
-        'postprocessors': [{
-            'key': 'FFmpegExtractAudio',
-            'preferredcodec': 'mp3',
-            'preferredquality': '192',
-        }],
-    }
-
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        print(f"Buscando y descargando: {song_title}")
-        info = ydl.extract_info(song_title, download=True)
-        downloaded_title = ydl.prepare_filename(info).replace(".webm", ".mp3").replace(".m4a", ".mp3")
-        print(f"Descargado como: {downloaded_title}")
-        return downloaded_title
-
-
-def descargar_pendientes(output_dir="~/Descargas"):
-    carpeta = expanduser(output_dir)
-
-    cursor.execute("SELECT id, titulo, artista FROM spotify WHERE descargada = FALSE")
-    canciones = cursor.fetchall()
-
-    for id_cancion, titulo, artista in canciones:
-        try:
-            nombre_busqueda = f"{titulo} {artista}"
-            print(f"Descargando: {nombre_busqueda}")
-            descarga(nombre_busqueda, output_dir=carpeta)
-
-            # Marcar como descargada
-            cursor.execute("UPDATE spotify SET descargada = TRUE WHERE id = %s", (id_cancion,))
-            conn.commit()
-            print(f"✅ Marcada como descargada: {titulo} - {artista}")
-
-        except Exception as e:
-            print(f"❌ Error al descargar {titulo}: {e}")
-
-
 while True:
     try:
         playback = sp.current_playback()
         if playback and playback['is_playing']:
             track = playback['item']
             guardar_cancion(track)
-            descargar_pendientes()
         else:
             print("No hay reproducción activa.")
     except Exception as e:
